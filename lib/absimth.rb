@@ -1,7 +1,7 @@
 require 'actor'
 
 require 'rubygems'
-require 'ffi-rzmq'
+require 'ffi-rxs'
 require 'uuid'
 
 # I don't really want to do this monkey patching... but I kinda do
@@ -223,7 +223,7 @@ module Absimth
 
   class Simulation
     def initialize(opts={})
-      # TODO: Validate options with ZMQ
+      # TODO: Validate options with XS
       @control_endpoint = opts[:control_endpoint]
       @comm_endpoint = opts[:comm_endpoint]
     end
@@ -239,11 +239,11 @@ module Absimth
     end
 
     def run(t=0)
-      @ctx = ZMQ::Context.create(1)
+      @ctx = XS::Context.create
       @control_faucet = ControlFaucet.new(@ctx, :endpoint => @control_endpoint)
       # I guess I shouldn't have to do this here, but somebody has to bind
-      @comms = @ctx.socket(ZMQ::PUB)
-      @comms.setsockopt(ZMQ::LINGER, 0)
+      @comms = @ctx.socket(XS::PUB)
+      @comms.setsockopt(XS::LINGER, 0)
       @comms.bind(@comm_endpoint)
 
       puts "Alright, gonna do some spawning and stuff"
@@ -281,7 +281,7 @@ module Absimth
     end
 
     def run(t=0)
-      @ctx = ZMQ::Context.create(1)
+      @ctx = XS::Context.create
       @control_sink = ControlSink.new(@ctx, :endpoint => @control_endpoint)
       @comms = CommHub.new(@ctx, :endpoint => @comm_endpoint)
 
@@ -366,10 +366,10 @@ module Absimth
     end
 
     def ec(rc)
-      if ZMQ::Util.resultcode_ok?(rc)
+      if XS::Util.resultcode_ok?(rc)
         true
       else
-        raise "ZMQ operation failed [#{ZMQ::Util.errno}]: #{ZMQ::Util.error_string}"
+        raise "XS operation failed [#{XS::Util.errno}]: #{XS::Util.error_string}"
       end
     end
 
@@ -378,7 +378,7 @@ module Absimth
   class ControlFaucet < Pipe
 
     def initialize(ctx, opts={})
-      @socket = ctx.socket(ZMQ::ROUTER)
+      @socket = ctx.socket(XS::ROUTER)
       @socket.bind(opts[:endpoint])
     end
 
@@ -391,8 +391,8 @@ module Absimth
       raise "Malformed message from slave" unless load_obj(slave_msg)[:signal] == :ready
       puts "Got a ready slave, gonna send a control signal"
 
-      ec @socket.send_string(slave_addr, ZMQ::SNDMORE)
-      ec @socket.send_string('', ZMQ::SNDMORE)
+      ec @socket.send_string(slave_addr, XS::SNDMORE)
+      ec @socket.send_string('', XS::SNDMORE)
       ec @socket.send_string(str)
     end
 
@@ -406,9 +406,9 @@ module Absimth
 
     def initialize(ctx, opts={})
       raise "Need options for pipe" unless !opts.empty?
-      @socket = ctx.socket(ZMQ::REQ)
-      @socket.setsockopt(ZMQ::LINGER, 0)
-      @socket.setsockopt(ZMQ::IDENTITY, UUID.generate)
+      @socket = ctx.socket(XS::REQ)
+      @socket.setsockopt(XS::LINGER, 0)
+      @socket.setsockopt(XS::IDENTITY, UUID.generate)
       @socket.connect(opts[:endpoint])
 
       send(:signal => :ready)
@@ -436,32 +436,32 @@ module Absimth
   class CommHub < Pipe
 
     def initialize(ctx, opts={})
-      @out_socket = ctx.socket(ZMQ::PUB)
-      @out_socket.setsockopt(ZMQ::LINGER, 0)
+      @out_socket = ctx.socket(XS::PUB)
+      @out_socket.setsockopt(XS::LINGER, 0)
       @out_socket.connect(opts[:endpoint])
-      @in_socket = ctx.socket(ZMQ::SUB)
-      @in_socket.setsockopt(ZMQ::LINGER, 0)
+      @in_socket = ctx.socket(XS::SUB)
+      @in_socket.setsockopt(XS::LINGER, 0)
       @in_socket.connect(opts[:endpoint])
     end
 
     def send(obj)
-      msg = dump_obj obj
       unless obj.respond_to? :to_uuid
         raise "Can't send a to_uuid-less object on comms!"
       end
-      msg = obj.to_uuid + msg
-      rc = @out_socket.send_string(msg)
-      return ec(rc)
+      ec @out_socket.send_string(obj.to_uuid, XS::SNDMORE)
+      msg = dump_obj obj
+      ec @out_socket.send_string(msg)
     end
 
     def recv
       # Truncate the initial to_uuid
-      str = recv_str(@in_socket)[36..-1]
+      to_uuid = recv_str(@in_socket)
+      str = recv_str(@in_socket)
       return load_obj(str)
     end
 
     def subscribe(str)
-      ec @in_socket.setsockopt(ZMQ::SUBSCRIBE, str)
+      ec @in_socket.setsockopt(XS::SUBSCRIBE, str)
     end
 
   end # class CommHub
