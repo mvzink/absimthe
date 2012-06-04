@@ -97,16 +97,23 @@ module Absimth
       running = true
       while running
 
+        sleep rand(2.0) # temporary measure :P
+
         messages = true
         while messages
           Actor.receive do |f|
-            f.when(ANY) do |msg|
-              if msg.kind_of?(Hash) and msg[:type] == :interaction
+            f.when(Hash) do |msg|
+              if msg[:type] == :interaction
                 self.from = AgentWrapper.new(*msg[:from])
                 self.send(msg[:method], *msg[:args])
-              else
-                puts "#{self.class}(#{self.object_id}): Don't know how to handle this message: #{msg}"
               end
+              if msg[:signal] == :done
+                running = false
+                messages = false
+              end
+            end
+            f.when(ANY) do
+              puts "#{self.class}(#{self.object_id}): Don't know how to handle this message: #{msg}"
             end
             f.after(0.0) do
               messages = false
@@ -116,7 +123,6 @@ module Absimth
 
         @timestamp += 1
         act
-        sleep rand(2.0) # temporary measure :P
 
       end # done running
     end
@@ -145,7 +151,6 @@ module Absimth
       @cls = cls
       @uuid = opts.delete(:agent_uuid)
       @actor = Actor.spawn_link do
-        puts "Start yo bitch up"
         begin
           Thread.current[:agent_delegate] = self
           cls.new(opts).loop
@@ -235,13 +240,14 @@ module Absimth
     def initialize(opts={}, &blk)
       raise "No block given to simulation master" unless blk
       @spawn_blk = blk
+      @known_slaves = Set[]
       super
     end
 
     def run(t=0)
       @ctx = XS::Context.create
       @control_faucet = ControlFaucet.new(@ctx, :endpoint => @control_endpoint)
-      # I guess I shouldn't have to do this here, but somebody has to bind
+      # I really, REALLY shouldn't have to do this here, but somebody has to bind
       @comms = @ctx.socket(XS::PUB)
       @comms.setsockopt(XS::LINGER, 0)
       @comms.bind(@comm_endpoint)
@@ -252,6 +258,10 @@ module Absimth
       puts "Alright, we are done setting up, let's take a nap"
       sleep t
 
+      while @known_slaves.size > 0 do
+        @known_slaves -= Set[@control_faucet.send(:signal => :done)]
+      end
+
       @control_faucet.close
       @comms.close
       @ctx.terminate
@@ -261,12 +271,12 @@ module Absimth
 
     def spawn(cls, opts={})
       agent_uuid = UUID.generate
-      @control_faucet.send({
+      slave_addr = @control_faucet.send({
         :signal => :spawn,
         :cls => cls,
         :agent_uuid => agent_uuid,
       }.merge(opts))
-      puts "Cool, successfully got some chump to run an agent"
+      @known_slaves += Set[slave_addr]
       return AgentWrapper.new(cls, agent_uuid)
     end
 
@@ -290,27 +300,51 @@ module Absimth
         loop do
           comm_msg = @comms.recv
           handle_comms_msg comm_msg
+          print ">-<"
+          Actor.receive do |f|
+            f.when(Hash) do |msg|
+              if msg[:signal] == :done
+                break
+              end
+            end
+            f.after(0.0) { nil }
+          end
         end
       end
       comm_send_actor = Actor.new do
         puts "Alright, listening for outgoing comms"
         loop do
           msg = Actor.receive
+          if msg.is_a?(Hash) and msg[:signal] == :done
+            msg[:from] << {:signal => :ok}
+            break
+          end
           if msg.respond_to? :to_uuid
-            puts "Pushing out a message"
+            print "<->"
             @comms.send(msg)
           end
         end
       end
       Actor.register(:comms, comm_send_actor)
+
       puts "Alright, listening for control signals"
       loop do
         control_msg = @control_sink.recv
-        handle_control_msg control_msg
+        if handle_control_msg(control_msg) == :done
+          break
+        else
+          @control_sink.ready
+        end
       end
 
-      # TODO: still need to be able to exit
-      puts "Okay, guess we're done"
+      puts "\nOkay, guess we're done"
+
+      @agent_delegates.each do |uuid,delegate|
+        delegate << {:signal => :done}
+      end
+
+      comm_send_actor << {:signal => :done}
+      comm_recv_actor << {:signal => :done}
 
       @control_sink.close
       @comms.close
@@ -320,10 +354,10 @@ module Absimth
     end
 
     def handle_control_msg(msg)
-      puts "Wowzers, getting controlled!"
       if msg[:signal] == :spawn
         a = spawn msg.delete(:cls), msg
       end
+      return msg[:signal]
     end
 
     def handle_comms_msg(msg)
@@ -389,11 +423,11 @@ module Absimth
       empty = recv_str @socket
       slave_msg = recv_str @socket
       raise "Malformed message from slave" unless load_obj(slave_msg)[:signal] == :ready
-      puts "Got a ready slave, gonna send a control signal"
 
       ec @socket.send_string(slave_addr, XS::SNDMORE)
       ec @socket.send_string('', XS::SNDMORE)
       ec @socket.send_string(str)
+      return slave_addr
     end
 
     def close
@@ -417,14 +451,15 @@ module Absimth
     def send obj
       str = dump_obj obj
       rc = ec @socket.send_string(str)
-      puts "Okay, well, uh, sent a message..."
       rc
     end
 
     def recv
-      obj = load_obj recv_str(@socket)
+      load_obj recv_str(@socket)
+    end
+
+    def ready
       send(:signal => :ready)
-      obj
     end
 
     def close
@@ -455,13 +490,21 @@ module Absimth
 
     def recv
       # Truncate the initial to_uuid
+      puts "YERP DERP GONNA TRY TO RECV"
       to_uuid = recv_str(@in_socket)
+      puts "WHOOOAAA, got a UUID"
       str = recv_str(@in_socket)
+      puts "OKAY, EVEN GOT A MSG GONNA MARSHAL IT NOW LOL"
       return load_obj(str)
     end
 
     def subscribe(str)
       ec @in_socket.setsockopt(XS::SUBSCRIBE, str)
+    end
+
+    def close
+      ec @out_socket.close
+      ec @in_socket.close
     end
 
   end # class CommHub
