@@ -116,7 +116,7 @@ module Absimth
 
         @timestamp += 1
         act
-        sleep 1 # temporary measure :P
+        sleep rand(2.0) # temporary measure :P
 
       end # done running
     end
@@ -309,7 +309,7 @@ module Absimth
         handle_control_msg control_msg
       end
 
-      # Exiting...?
+      # TODO: still need to be able to exit
       puts "Okay, guess we're done"
 
       @control_sink.close
