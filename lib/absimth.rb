@@ -15,6 +15,11 @@ end
 
 module Absimth
 
+  ANY = Object.new
+  def ANY.===(obj)
+    true
+  end
+
   module Agent
 
     def self.extended(cls)
@@ -87,11 +92,6 @@ module Absimth
       self.instance_variable_set(:@from, o)
     end
 
-    ANY = Object.new
-    def ANY.===(obj)
-      true
-    end
-
     def loop
       # TODO: Exit condition lol; probably clock limit on sim
       running = true
@@ -141,9 +141,9 @@ module Absimth
   end # class AgentDelegate
 
   class LocalAgentDelegate < AgentDelegate
-    def initialize(cls, uuid)
+    def initialize(cls, opts)
       @cls = cls
-      @uuid = uuid
+      @uuid = opts.delete(:agent_uuid)
       @actor = Actor.spawn_link do
         puts "Start yo bitch up"
         begin
@@ -186,7 +186,6 @@ module Absimth
     def initialize(cls, uuid)
       @cls = cls
       @uuid = uuid
-      update_delegate
     end
 
     def update_delegate
@@ -241,7 +240,11 @@ module Absimth
 
     def run(t=0)
       @ctx = ZMQ::Context.create(1)
-      @control_faucet = ControlFaucet.new(@ctx, @control_endpoint)
+      @control_faucet = ControlFaucet.new(@ctx, :endpoint => @control_endpoint)
+      # I guess I shouldn't have to do this here, but somebody has to bind
+      @comms = @ctx.socket(ZMQ::PUB)
+      @comms.setsockopt(ZMQ::LINGER, 0)
+      @comms.bind(@comm_endpoint)
 
       puts "Alright, gonna do some spawning and stuff"
 
@@ -249,23 +252,19 @@ module Absimth
       puts "Alright, we are done setting up, let's take a nap"
       sleep t
 
-      @control.close
+      @control_faucet.close
+      @comms.close
       @ctx.terminate
 
       puts "Cleaned up fine"
     end
 
     def spawn(cls, opts={})
-      address = @control.recv
-      empty = @control.recv
-      ready = @control.recv
-      raise "Dicks!" unless ready[:signal] == :ready
-      puts "Got a ready slave, gonna send a control signal"
       agent_uuid = UUID.generate
-      @control.send({
+      @control_faucet.send({
         :signal => :spawn,
         :cls => cls,
-        :agent_uuid => agent_uuid
+        :agent_uuid => agent_uuid,
       }.merge(opts))
       puts "Cool, successfully got some chump to run an agent"
       return AgentWrapper.new(cls, agent_uuid)
@@ -283,24 +282,22 @@ module Absimth
 
     def run(t=0)
       @ctx = ZMQ::Context.create(1)
-      @control_sink = ControlSink.new(@ctx, @control_endpoint)
-      @comms = Pipe.new(@ctx,
-        :in => {:endpoint => @comm_endpoint, :type => ZMQ::SUB},
-        :out => {:endpoint => @comm_endpoint, :type => ZMQ::PUB}
-      )
+      @control_sink = ControlSink.new(@ctx, :endpoint => @control_endpoint)
+      @comms = CommHub.new(@ctx, :endpoint => @comm_endpoint)
 
-      comm_recv_thread = Thread.new do
-        puts "Alright, listening for comms"
-        while (comm_msg = @comms.recv)
-          puts "WHOAAA, doing some comms"
+      comm_recv_actor = Actor.new do
+        puts "Alright, listening for incoming comms"
+        loop do
+          comm_msg = @comms.recv
           handle_comms_msg comm_msg
         end
       end
       comm_send_actor = Actor.new do
+        puts "Alright, listening for outgoing comms"
         loop do
           msg = Actor.receive
-          puts "WHOOAAAHOHOOO, sending some messages"
           if msg.respond_to? :to_uuid
+            puts "Pushing out a message"
             @comms.send(msg)
           end
         end
@@ -308,14 +305,14 @@ module Absimth
       Actor.register(:comms, comm_send_actor)
       puts "Alright, listening for control signals"
       loop do
-        @control_sink.send {:signal => :ready}
         control_msg = @control_sink.recv
-        puts "Wowzers, getting controlled!"
         handle_control_msg control_msg
       end
+
+      # Exiting...?
       puts "Okay, guess we're done"
 
-      @control.close
+      @control_sink.close
       @comms.close
       @ctx.terminate
 
@@ -323,17 +320,14 @@ module Absimth
     end
 
     def handle_control_msg(msg)
+      puts "Wowzers, getting controlled!"
       if msg[:signal] == :spawn
         a = spawn msg.delete(:cls), msg
-        @control.send({
-          :uuid => msg[:uuid],
-          :signal => :ok,
-          :agent_uuid => a.uuid
-        })
       end
     end
 
     def handle_comms_msg(msg)
+      puts "Whoa, got a comms message"
       @agent_delegates[msg.to_uuid] << msg
     end
 
@@ -351,74 +345,24 @@ module Absimth
 
   end # class SimulationSlave
 
-  class ControlFaucet
+  class Pipe
 
-    def initialize(ctx, opts={})
-      @socket.close
+    def recv_str socket
+      str = ''
+      ec socket.recv_string(str)
+      str
     end
 
-  end
-
-  class ControlSink
-
-    def initialize(ctx, opts={})
-
-    end
-
-    def close
-      @socket.close
-    end
-
-  end
-
-  class FuckedPipe
-
-    def initialize(ctx, opts={})
-      raise "Need options for pipe" unless !opts.empty?
-      @in_socket = ctx.socket(opts[:in][:type])
-      @out_socket = ctx.socket(opts[:out][:type])
-      ec @in_socket.setsockopt(ZMQ::LINGER, 0)
-      ec @in_socket.connect(opts[:in][:endpoint])
-      ec @out_socket.setsockopt(ZMQ::LINGER, 0)
-      ec @out_socket.connect(opts[:out][:endpoint])
-    end
-
-    def close
-      ec(@in_socket.close) or ec(@out_socket.close)
-    end
-
-    def send(obj)
-      msg = Marshal.dump(obj)
-      if @out_socket.name == "PUB"
-        unless obj.respond_to? :to_uuid
-          raise "Can't send a to_uuid-less object on a comms pipe!"
-        end
-        msg = obj.to_uuid + msg
-      end
-      rc = @out_socket.send_string(msg)
-      return ec(rc)
-    end
-
-    def recv
-      msg = ''
-      rc = @in_socket.recv_string(msg)
-      ec(rc)
-      if @in_socket.name == "SUB"
-        msg = msg[36..-1]
-      end
-      return load_obj(msg)
-    end
-
-    def load_obj(msg)
-      return Marshal.load(msg, lambda {|obj|
+    def load_obj(str)
+      return Marshal.load(str, lambda {|obj|
         if obj.class == AgentWrapper
           obj.update_delegate
         end
       })
     end
 
-    def subscribe(str)
-      ec(@in_socket.setsockopt(ZMQ::SUBSCRIBE, str))
+    def dump_obj(obj)
+      Marshal.dump(obj)
     end
 
     def ec(rc)
@@ -430,6 +374,97 @@ module Absimth
     end
 
   end # class Pipe
+
+  class ControlFaucet < Pipe
+
+    def initialize(ctx, opts={})
+      @socket = ctx.socket(ZMQ::ROUTER)
+      @socket.bind(opts[:endpoint])
+    end
+
+    def send(obj)
+      str = dump_obj obj
+
+      slave_addr = recv_str @socket
+      empty = recv_str @socket
+      slave_msg = recv_str @socket
+      raise "Malformed message from slave" unless load_obj(slave_msg)[:signal] == :ready
+      puts "Got a ready slave, gonna send a control signal"
+
+      ec @socket.send_string(slave_addr, ZMQ::SNDMORE)
+      ec @socket.send_string('', ZMQ::SNDMORE)
+      ec @socket.send_string(str)
+    end
+
+    def close
+      @socket.close
+    end
+
+  end # class ControlFaucet
+
+  class ControlSink < Pipe
+
+    def initialize(ctx, opts={})
+      raise "Need options for pipe" unless !opts.empty?
+      @socket = ctx.socket(ZMQ::REQ)
+      @socket.setsockopt(ZMQ::LINGER, 0)
+      @socket.setsockopt(ZMQ::IDENTITY, UUID.generate)
+      @socket.connect(opts[:endpoint])
+
+      send(:signal => :ready)
+    end
+
+    def send obj
+      str = dump_obj obj
+      rc = ec @socket.send_string(str)
+      puts "Okay, well, uh, sent a message..."
+      rc
+    end
+
+    def recv
+      obj = load_obj recv_str(@socket)
+      send(:signal => :ready)
+      obj
+    end
+
+    def close
+      @socket.close
+    end
+
+  end # class ControlSink
+
+  class CommHub < Pipe
+
+    def initialize(ctx, opts={})
+      @out_socket = ctx.socket(ZMQ::PUB)
+      @out_socket.setsockopt(ZMQ::LINGER, 0)
+      @out_socket.connect(opts[:endpoint])
+      @in_socket = ctx.socket(ZMQ::SUB)
+      @in_socket.setsockopt(ZMQ::LINGER, 0)
+      @in_socket.connect(opts[:endpoint])
+    end
+
+    def send(obj)
+      msg = dump_obj obj
+      unless obj.respond_to? :to_uuid
+        raise "Can't send a to_uuid-less object on comms!"
+      end
+      msg = obj.to_uuid + msg
+      rc = @out_socket.send_string(msg)
+      return ec(rc)
+    end
+
+    def recv
+      # Truncate the initial to_uuid
+      str = recv_str(@in_socket)[36..-1]
+      return load_obj(str)
+    end
+
+    def subscribe(str)
+      ec @in_socket.setsockopt(ZMQ::SUBSCRIBE, str)
+    end
+
+  end # class CommHub
 
 end # module Absimth
 

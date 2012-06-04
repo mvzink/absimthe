@@ -136,12 +136,20 @@ def test_simple_sim(opts={})
   t = opts.delete(:time)
   if opts.delete(:master)
     sim = Absimth::SimulationMaster.new opts do
-      holtzinger_studio = spawn Gallery
-      outside_lines = spawn Gallery
-
-      spawn Patron, :known_galleries => Set[holtzinger_studio]
-      spawn Patron, :known_galleries => Set[holtzinger_studio, outside_lines]
-      spawn Patron, :known_galleries => Set[outside_lines]
+      last_gallery = nil
+      10.times do
+        this_gallery = spawn Gallery
+        10.times do
+          spawn Patron, :known_galleries => Set[this_gallery]
+          if last_gallery
+            spawn Patron, :known_galleries => Set[last_gallery, this_gallery]
+          end
+        end
+        last_gallery = this_gallery
+      end
+      10.times do
+        spawn Patron, :known_galleries => Set[last_gallery]
+      end
     end
   else
     sim = Absimth::SimulationSlave.new opts
