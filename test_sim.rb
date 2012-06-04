@@ -137,9 +137,9 @@ def test_simple_sim(opts={})
   if opts.delete(:master)
     sim = Absimth::SimulationMaster.new opts do
       last_gallery = nil
-      10.times do
+      9.times do
         this_gallery = spawn Gallery
-        10.times do
+        9.times do
           spawn Patron, :known_galleries => Set[this_gallery]
           if last_gallery
             spawn Patron, :known_galleries => Set[last_gallery, this_gallery]
@@ -147,7 +147,7 @@ def test_simple_sim(opts={})
         end
         last_gallery = this_gallery
       end
-      10.times do
+      9.times do
         spawn Patron, :known_galleries => Set[last_gallery]
       end
     end
@@ -170,8 +170,8 @@ if __FILE__ == $0
       "ZMQ-compatible endpoint for inter-node agent communication",
       :default => "ipc://.ipc/absimth_comms"
     opt :time,
-      "Sleep the process for this many seconds",
-      :default => 500
+      "Abort after this many seconds",
+      :default => 3
   end
 
   if opts[:master]

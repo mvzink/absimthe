@@ -110,9 +110,10 @@ module Absimth
               if msg[:signal] == :done
                 running = false
                 messages = false
+                msg[:from] << {:signal => :ok}
               end
             end
-            f.when(ANY) do
+            f.when(ANY) do |msg|
               puts "#{self.class}(#{self.object_id}): Don't know how to handle this message: #{msg}"
             end
             f.after(0.0) do
@@ -180,7 +181,7 @@ module Absimth
 
     def send(msg)
       msg[:to_uuid] = @uuid
-      Actor[:comms] << msg
+      Actor[:comm_horn] << msg
     end
     alias_method :<<, :send
 
@@ -293,44 +294,51 @@ module Absimth
     def run(t=0)
       @ctx = XS::Context.create
       @control_sink = ControlSink.new(@ctx, :endpoint => @control_endpoint)
-      @comms = CommHub.new(@ctx, :endpoint => @comm_endpoint)
+      @comm_horn = CommHorn.new(@ctx, :endpoint => @comm_endpoint)
 
-      comm_recv_actor = Actor.new do
+      comm_ear_actor = Actor.new do
+        @comm_ear = CommEar.new(@ctx, :endpoint => @comm_endpoint)
         puts "Alright, listening for incoming comms"
         loop do
-          comm_msg = @comms.recv
-          handle_comms_msg comm_msg
+          comm_msg = @comm_ear.recv
+          handle_comm_msg comm_msg
           print ">-<"
           Actor.receive do |f|
             f.when(Hash) do |msg|
               if msg[:signal] == :done
+                msg[:from] << {:signal => :ok}
+                @comm_ear.close
                 break
               end
             end
             f.after(0.0) { nil }
           end
         end
+        puts "Okay, done listening for incoming comms"
       end
-      comm_send_actor = Actor.new do
+      comm_horn_actor = Actor.new do
         puts "Alright, listening for outgoing comms"
         loop do
           msg = Actor.receive
           if msg.is_a?(Hash) and msg[:signal] == :done
+            @comm_horn.close
             msg[:from] << {:signal => :ok}
             break
           end
           if msg.respond_to? :to_uuid
             print "<->"
-            @comms.send(msg)
+            @comm_horn.send(msg)
           end
         end
+        puts "Okay, done listening for outgoing comms"
       end
-      Actor.register(:comms, comm_send_actor)
+      Actor.register(:comm_horn, comm_horn_actor)
 
       puts "Alright, listening for control signals"
       loop do
         control_msg = @control_sink.recv
         if handle_control_msg(control_msg) == :done
+          @control_sink.close
           break
         else
           @control_sink.ready
@@ -339,15 +347,17 @@ module Absimth
 
       puts "\nOkay, guess we're done"
 
+      channel = Rubinius::Channel.new
       @agent_delegates.each do |uuid,delegate|
-        delegate << {:signal => :done}
+        delegate << {:signal => :done, :from => channel}
+        channel.receive
       end
 
-      comm_send_actor << {:signal => :done}
-      comm_recv_actor << {:signal => :done}
+      comm_horn_actor << {:signal => :done, :from => channel}
+      channel.receive
+      comm_ear_actor << {:signal => :done, :from => channel}
+      channel.receive
 
-      @control_sink.close
-      @comms.close
       @ctx.terminate
 
       puts "Cleaned up safely"
@@ -360,20 +370,20 @@ module Absimth
       return msg[:signal]
     end
 
-    def handle_comms_msg(msg)
+    def handle_comm_msg(msg)
       puts "Whoa, got a comms message"
       @agent_delegates[msg.to_uuid] << msg
     end
 
     def spawn(cls, opts={})
-      unless @comms
-        raise "SimulationSlave#spawn called without a connected comms pipe!"
+      unless @comm_horn and @comm_ear
+        raise "SimulationSlave#spawn called without connected comm pipes!"
       end
       # TODO: Should do the spawning wherever is most appropriate
       # For simplicity, we'll initially just rely on push/pull sockets
       aw = LocalAgentDelegate.new(cls, opts)
       @agent_delegates[aw.uuid] = aw
-      @comms.subscribe(aw.uuid)
+      @comm_ear.subscribe(aw.uuid)
       return aw
     end
 
@@ -468,46 +478,56 @@ module Absimth
 
   end # class ControlSink
 
-  class CommHub < Pipe
+  class CommHorn < Pipe
 
     def initialize(ctx, opts={})
-      @out_socket = ctx.socket(XS::PUB)
-      @out_socket.setsockopt(XS::LINGER, 0)
-      @out_socket.connect(opts[:endpoint])
-      @in_socket = ctx.socket(XS::SUB)
-      @in_socket.setsockopt(XS::LINGER, 0)
-      @in_socket.connect(opts[:endpoint])
-    end
+      @socket = ctx.socket(XS::PUB)
+      @socket.setsockopt(XS::LINGER, 0)
+      @socket.connect(opts[:endpoint])
+   end
 
     def send(obj)
       unless obj.respond_to? :to_uuid
         raise "Can't send a to_uuid-less object on comms!"
       end
-      ec @out_socket.send_string(obj.to_uuid, XS::SNDMORE)
+      ec @socket.send_string(obj.to_uuid, XS::SNDMORE)
       msg = dump_obj obj
-      ec @out_socket.send_string(msg)
+      ec @socket.send_string(msg)
     end
+
+    def close
+      ec @socket.close
+    end
+
+  end # class CommHorn
+
+  class CommEar < Pipe
+
+    def initialize(ctx, opts={})
+      @socket = ctx.socket(XS::SUB)
+      @socket.setsockopt(XS::LINGER, 0)
+      @socket.connect(opts[:endpoint])
+    end # class CommEar
 
     def recv
       # Truncate the initial to_uuid
       puts "YERP DERP GONNA TRY TO RECV"
-      to_uuid = recv_str(@in_socket)
+      to_uuid = recv_str(@socket)
       puts "WHOOOAAA, got a UUID"
-      str = recv_str(@in_socket)
+      str = recv_str(@socket)
       puts "OKAY, EVEN GOT A MSG GONNA MARSHAL IT NOW LOL"
       return load_obj(str)
     end
 
     def subscribe(str)
-      ec @in_socket.setsockopt(XS::SUBSCRIBE, str)
+      ec @socket.setsockopt(XS::SUBSCRIBE, str)
     end
 
     def close
-      ec @out_socket.close
-      ec @in_socket.close
+      ec @socket.close
     end
 
-  end # class CommHub
+  end # class CommEar
 
 end # module Absimth
 
