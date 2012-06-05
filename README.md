@@ -1,4 +1,6 @@
-# Absimthe: A Distributed Agent-based Modeling Framework for Ruby
+# Absimthe
+
+## A Distributed Agent-based Modeling Framework for Ruby
 
 *Current status: prototype*
 
@@ -6,7 +8,7 @@ Distributed, parallel computations are hard. Global state, virtual time, and num
 
 Aiming to make this easier, Absimthe will allow simple, descriptive declarations of agents with plenty of flexibility for how agents interact.
 
-## Current features
+### Current features
 
 The crucial architectural features are largely implemented (but with a big "prototype" label)
 
@@ -17,7 +19,7 @@ Things which I thought would be features but which can actually be implemented p
 
 * **Census/reporting** for flexible data collection throughout a simulation.
 
-## Planned features
+### Planned features
 
 Aside from bugfixes and performance improvements (of which there are many to be made), here are some of the major changes currently on the drawing table.
 
@@ -26,17 +28,25 @@ Aside from bugfixes and performance improvements (of which there are many to be 
 * **Easy experiment scheduling** of multiple runs (e.g. for stochastic models with sensitive initial conditions, or for varying certain parameters) 
 * **Environment**, which is crucial for most useful models, must currently be implemented as an agent or set of agents. This is often not the most efficient, so some level of global or node-local state may be desirable.
 
-## Usage
+### Usage
 
-**N.B.: Absimthe requires [Rubinius](http://rubini.us/)** and always will. I only test on `rbx-2.0.0-dev`. Rubinius's built in Channels, stdlib Actors, and actually good threads are crucial to Absimthe.
+**N.B.: Absimthe requires [Rubinius](http://rubini.us/)** and probably always will. I only test on `rbx-2.0.0-dev`. Rubinius's built in Channels, stdlib Actors, and actually good threads are crucial to Absimthe.
 
-Running a sim should be as easy as:
+[Insert here: a note on installing the required libraries and why I haven't made a Gemfile yet.]
+
+Once you have the required libraries installed, running a sim should be as easy as:
 
     $ rbx test_sim.rb
 
 And for now, `test_sim.rb` is all we've got in the way of documentation or examples. Sorry.
 
-## A note on naming conventions
+### Technology
+
+* [Rubinius](http://rubini.us/): Good Ruby.
+* [Crossroads I/O](http://crossroads.io/): Good messaging.
+* [Caffeine](http://en.wikipedia.org/wiki/Caffeine): The funny thing about caffeine is I can't even spell "caffeine" without caffeine. It's a problem.
+
+### A note on naming conventions
 
 Leave me alone.
 
