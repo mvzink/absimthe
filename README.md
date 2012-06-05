@@ -36,3 +36,7 @@ Running a sim should be as easy as:
 
 And for now, `test_sim.rb` is all we've got in the way of documentation or examples. Sorry.
 
+## A note on naming conventions
+
+Leave me alone.
+
