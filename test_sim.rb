@@ -34,7 +34,7 @@ class Patron
     end
     if self.painting_lust >= 10.0
       # try to get a painting
-      if self.location
+      if not self.location.nil?
         self.location.request_painting
       elsif !self.known_galleries.empty?
         g = self.known_galleries.to_a[rand(self.known_galleries.size)]
@@ -184,7 +184,7 @@ class CensusBureau
       avg_ng = actual_ng.to_f / self.known_patrons
       avg_np = actual_np.to_f / self.known_patrons
     end
-    puts "Currently #{actual_ng} of #{desired_ng}. Of #{self.known_patrons} patrons, the average one knows #{avg_ng} of #{self.known_galleries} galleries and has #{avg_np} paintings."
+    puts "#{@timestamp}: Currently #{actual_ng} of #{desired_ng}. Of #{self.known_patrons} patrons, the average one knows #{avg_ng} of #{self.known_galleries} galleries and has #{avg_np} paintings."
     sleep 1
   end
 
@@ -214,7 +214,7 @@ def test_simple_sim(opts={})
   else
     sim = Absimth::SimulationSlave.new opts
   end
-  sim.run(t, :painting_production => 2) # TODO: Exit condition lol; probably clock limit on sim
+  sim.run(t, :painting_production => 4) # TODO: Exit condition lol; probably clock limit on sim
 end
 
 if __FILE__ == $0

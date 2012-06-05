@@ -51,17 +51,51 @@ module Absimth
     def attribute(name, opts={})
       name = name.to_s if name.kind_of?(Symbol)
 
+      unless self.class_variable_defined?(:@@attributes)
+        self.class_variable_set(:@@attributes, [])
+      end
+      attrs = self.class_variable_get(:@@attributes)
+      attrs << name
+
       define_method name do
-        instance_variable_get("@#{name}")
+        if not instance_variable_defined?("@#{name}")
+          instance_variable_set("@#{name}", {})
+          nil
+        else
+          hist = instance_variable_get("@#{name}")
+          if hist.has_key? @timestamp
+            hist[@timestamp]
+          elsif hist.keys.empty?
+            nil
+          else
+            max = hist.keys.max
+            hist[max]
+          end
+        end
       end
 
       define_method (name + '=') do |v|
-        instance_variable_set("@#{name}", v)
+        if not instance_variable_defined?("@#{name}")
+          instance_variable_set("@#{name}", {})
+        end
+        hist = instance_variable_get("@#{name}")
+        hist[@timestamp] = v
+      end
+
+      define_method ('rollback_' + name) do
+        if not instance_variable_defined?("@#{name}")
+          instance_variable_set("@#{name}", {})
+        else
+          vars = instance_variable_get("@#{name}")
+          vars.delete_if do |k,v|
+            @timestamp < k
+          end
+        end
       end
 
       default = opts[:default]
-      unless default.nil?
-        unless self.class_variable_defined?(:@@init_hooks)
+      if not default.nil?
+        if not self.class_variable_defined?(:@@init_hooks)
           self.class_variable_set(:@@init_hooks, {})
         end
         ihs = self.class_variable_get(:@@init_hooks)
@@ -73,6 +107,25 @@ module Absimth
           end
           send(name + '=', v)
         }
+      end
+    end
+
+    def timestamp
+      @timestamp
+    end
+
+    def timestamp= t
+      @timestamp = t
+      Thread.current[:agent_delegate].timestamp = t
+    end
+
+    def rollback(t)
+      @timestamp = t
+      if class_variable_defined?(:@@attributes)
+        attrs = class_variable_get(:@@attributes)
+        attrs.each do |attr|
+          self.send('rollback_' + attr)
+        end
       end
     end
 
@@ -111,6 +164,9 @@ module Absimth
             Actor.receive do |f|
               f.when(Hash) do |msg|
                 if msg[:type] == :interaction
+                  if msg[:timestamp] < @timestamp
+                    rollback msg[:timestamp]
+                  end
                   self.from = AgentWrapper.new(*msg[:from])
                   self.send(msg[:method], *msg[:args])
                 end
@@ -128,7 +184,7 @@ module Absimth
           end
         end # done checking messages
 
-        @timestamp += 1
+        self.timestamp += 1
         act
 
       end # done running
@@ -161,6 +217,7 @@ module Absimth
   class LocalAgentDelegate < AgentDelegate
     def initialize(cls, opts)
       @cls = cls
+      @timestamp = 0
       @uuid = opts.delete(:agent_uuid)
       @actor = Actor.spawn_link do
         begin
@@ -176,6 +233,14 @@ module Absimth
           end
         end
       end
+    end
+
+    def timestamp
+      @timestamp
+    end
+
+    def timestamp= t
+      @timestamp = t
     end
 
     def kill
@@ -235,13 +300,14 @@ module Absimth
     end
 
     def method_missing(meth, *args, &blk)
-      delegate = Thread.current[:agent_delegate]
+      sender = Thread.current[:agent_delegate]
       if @cls.accepts_interaction?(meth)
         self << {
           :type => :interaction,
           :method => meth,
           :args => args,
-          :from => [delegate.cls, delegate.uuid]
+          :from => [sender.cls, sender.uuid],
+          :timestamp => sender.timestamp
         }
       else
         super
