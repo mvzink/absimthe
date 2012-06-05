@@ -14,6 +14,13 @@ class Hash
   end
 end
 
+# Wait no, monkey patching is the best
+class Actor
+  def kill
+    @thread.kill
+  end
+end
+
 module Absimth
 
   ANY = Object.new
@@ -98,8 +105,6 @@ module Absimth
       running = true
       while running
 
-        sleep rand(2.0) # temporary measure :P
-
         messages = true
         while messages
           Actor.receive do |f|
@@ -107,11 +112,6 @@ module Absimth
               if msg[:type] == :interaction
                 self.from = AgentWrapper.new(*msg[:from])
                 self.send(msg[:method], *msg[:args])
-              end
-              if msg[:signal] == :done
-                running = false
-                messages = false
-                msg[:from] << {:signal => :ok}
               end
             end
             f.when(ANY) do |msg|
@@ -127,6 +127,7 @@ module Absimth
         act
 
       end # done running
+      print "¡#{self.object_id}!"
     end
 
   end # module Agent
@@ -141,8 +142,12 @@ module Absimth
       @cls
     end
 
+    def kill
+      false
+    end
+
     def send(msg)
-      raise "bare AgentWrapper getting a message!"
+      raise "bare AgentDelegate getting a message!"
     end
     alias_method :<<, :send
 
@@ -156,14 +161,20 @@ module Absimth
         begin
           Thread.current[:agent_delegate] = self
           cls.new(opts).loop
-        rescue Exception => e
-          logfile = File.join("logs", "#{Actor.current.object_id}.crash")
-          File.open(logfile, "a") { |f|
-            e.render("#{@cls}(#{Actor.current.object_id}) crashed", f, false)
-          }
-          puts "#{@cls}(#{Actor.current.object_id}) crashed"
+        rescue => e
+          unless e.is_a? Thread::Die
+            logfile = File.join("logs", "#{Actor.current.object_id}.crash")
+            File.open(logfile, "a") { |f|
+              e.render("#{@cls}(#{Actor.current.object_id}) crashed", f, false)
+            }
+            puts "#{@cls}(#{Actor.current.object_id}) crashed"
+          end
         end
       end
+    end
+
+    def kill
+      @actor.kill
     end
 
     def send(msg)
@@ -182,9 +193,18 @@ module Absimth
 
     def send(msg)
       msg[:to_uuid] = @uuid
-      Actor[:comm_horn] << msg
+      comm_horn_actor = Actor[:comm_horn]
+      if comm_horn_actor.nil?
+        raise NoCommActorError
+      else
+        Actor[:comm_horn] << msg
+      end
     end
     alias_method :<<, :send
+
+    def kill
+      true
+    end
 
   end # class RemoteAgentDelegate
 
@@ -242,7 +262,6 @@ module Absimth
     def initialize(opts={}, &blk)
       raise "No block given to simulation master" unless blk
       @spawn_blk = blk
-      @known_slaves = Set[]
       super
     end
 
@@ -250,13 +269,28 @@ module Absimth
       @ctx = XS::Context.create
       @control_faucet = ControlFaucet.new(@ctx, :endpoint => @control_endpoint)
 
+      puts "Gonna collect slave info"
+      slaves = {}
+      # Holy god this is janky
+      misses = 0
+      while misses < 1000 do
+        rep = @control_faucet.send(:signal => :ping)
+        if slaves.has_key? rep[:slave_uuid]
+          misses += 1
+        else
+          slaves[rep[:slave_uuid]] = rep[:endpoint]
+        end
+      end
+      puts "Pushing out #{slaves.size} endpoints for comms listening: #{slaves.inspect}"
+      @control_faucet.send_all(slaves.keys, :signal => :listen, :endpoints => slaves.values)
+
       puts "Alright, gonna do some spawning and stuff"
 
       self.instance_eval &@spawn_blk
       puts "Alright, we are done setting up, let's take a nap"
       sleep t
 
-      @control_faucet.send_all(@known_slaves, :signal => :done)
+      @control_faucet.send_all(slaves.keys, :signal => :done)
 
       @control_faucet.close
       @ctx.terminate
@@ -266,21 +300,11 @@ module Absimth
 
     def spawn(cls, opts={})
       agent_uuid = UUID.generate
-      puts "Gonna spawn agent #{agent_uuid}"
       rep = @control_faucet.send({
         :signal => :spawn,
         :cls => cls,
         :agent_uuid => agent_uuid,
       }.merge(opts))
-      puts "Got response #{rep}"
-      s = @known_slaves.size
-      @known_slaves += Set[rep[:slave_uuid]]
-      if @known_slaves.size > s
-        puts "Pushing out a new peer"
-        @control_faucet.send_all(@known_slaves - rep[:slave_uuid],
-                                 :signal => :peer, :endpoint => rep[:endpoint])
-      end
-      puts "Returning agent wrapper"
       return AgentWrapper.new(cls, agent_uuid)
     end
 
@@ -296,51 +320,45 @@ module Absimth
 
     def run(t=0)
       @ctx = XS::Context.create
-      control_sink = ControlSink.new(@ctx, :endpoint => @control_endpoint)
-      comm_horn = CommHorn.new(@ctx, :endpoint => @comm_endpoint)
-
-      @comm_ear_actor = Actor.new do
-        comm_ear = CommEar.new(@ctx, :endpoint => @comm_endpoint)
+      @control_sink = ControlSink.new(@ctx, :endpoint => @control_endpoint, :comm_endpoint => @comm_endpoint)
+      @comm_ear = CommEar.new(@ctx, :comm_endpoint => @comm_endpoint)
+      @comm_ear_listen_actor = Actor.new do
         puts "Alright, listening for incoming comms"
         loop do
-          Actor.receive do |f|
-            f.when(Hash) do |msg|
-              case msg[:signal]
-              when :done
-                msg[:from] << {:signal => :ok}
-                comm_ear.close
-                break
-              when :peer
-                comm_ear.peer(msg[:endpoint])
-                puts "NO WAY, I PEERED WITH SOMEBODY"
-              when :subscribe
-                comm_ear.subscribe(msg[:uuid])
-                puts "I ACTUALLY SUBSCRIBED TO SOMETHING"
-              end
-            end
-            f.after(0.0) do
-              comm_msg = comm_ear.recv
-              unless comm_msg.nil?
-                handle_comm_msg comm_msg
-                print " >< "
-              end
-            end
+          comm_msg = @comm_ear.recv
+          unless comm_msg.nil?
+            handle_comm_msg comm_msg
+            print " >< "
           end
         end
         puts "Okay, done listening for incoming comms"
       end
+      @comm_ear_control_actor = Actor.new do
+        msg = Actor.receive
+        case msg[:signal]
+        when :done
+          break
+        when :listen
+          msg[:endpoints].each do |endpt|
+            @comm_ear.listen(endpt)
+          end
+        when :subscribe
+          @comm_ear.subscribe(msg[:uuid])
+          puts "I ACTUALLY SUBSCRIBED TO SOMETHING"
+        end
+      end
+      @comm_horn = CommHorn.new(@ctx, :endpoint => @comm_endpoint)
       @comm_horn_actor = Actor.new do
         puts "Alright, listening for outgoing comms"
         loop do
           msg = Actor.receive
           if msg.is_a?(Hash) and msg[:signal] == :done
-            comm_horn.close
-            msg[:from] << {:signal => :ok}
+            @comm_horn.close
             break
           end
           if msg.respond_to? :to_uuid
             print " <> "
-            comm_horn.send(msg)
+            @comm_horn.send(msg)
           end
         end
         puts "Okay, done listening for outgoing comms"
@@ -349,28 +367,27 @@ module Absimth
 
       puts "Alright, listening for control signals"
       loop do
-        control_msg = control_sink.recv
+        control_msg = @control_sink.recv
         if handle_control_msg(control_msg) == :done
-          control_sink.close
           break
         else
-          control_sink.ready
+          @control_sink.ready
         end
       end
 
       puts "\nOkay, guess we're done"
 
-      channel = Rubinius::Channel.new
-      @agent_delegates.each do |uuid,delegate|
-        delegate << {:signal => :done, :from => channel}
-        channel.receive
+      @agent_delegates.each do |uuid, delegate|
+        delegate.kill
       end
 
-      @comm_horn_actor << {:signal => :done, :from => channel}
-      channel.receive
-      @comm_ear_actor << {:signal => :done, :from => channel}
-      channel.receive
+      @comm_horn_actor.kill
+      @comm_ear_control_actor.kill
+      @comm_ear_listen_actor.kill
 
+      @control_sink.close
+      @comm_horn.close
+      @comm_ear.close
       @ctx.terminate
 
       puts "Cleaned up safely"
@@ -379,8 +396,8 @@ module Absimth
     def handle_control_msg(msg)
       if msg[:signal] == :spawn
         a = spawn msg.delete(:cls), msg
-      elsif msg[:signal] == :peer
-        @comm_ear_actor << msg
+      elsif msg[:signal] == :listen
+        @comm_ear_control_actor << msg
       end
       return msg[:signal]
     end
@@ -391,14 +408,14 @@ module Absimth
     end
 
     def spawn(cls, opts={})
-      unless @comm_horn_actor and @comm_ear_actor
+      unless @comm_horn_actor
         raise "SimulationSlave#spawn called without connected comm pipes!"
       end
       # TODO: Should do the spawning wherever is most appropriate
       # For simplicity, we'll initially just rely on push/pull sockets
       aw = LocalAgentDelegate.new(cls, opts)
       @agent_delegates[aw.uuid] = aw
-      @comm_ear_actor << {:signal => :subscribe, :uuid => aw.uuid}
+      @comm_ear_control_actor << {:signal => :subscribe, :uuid => aw.uuid}
       return aw
     end
 
@@ -457,6 +474,7 @@ module Absimth
     end
 
     def send_all(uuids, obj)
+      uuids = uuids.to_set
       while uuids.size > 0 do
         rep = send(obj)
         uuids -= Set[rep[:slave_uuid]]
@@ -473,12 +491,12 @@ module Absimth
 
     def initialize(ctx, opts={})
       raise "Need options for pipe" unless !opts.empty?
-      @endpoint = opts[:endpoint]
+      @comm_endpoint = opts[:comm_endpoint]
       @uuid = UUID.generate
       @socket = ctx.socket(XS::REQ)
       @socket.setsockopt(XS::LINGER, 0)
       @socket.setsockopt(XS::IDENTITY, @uuid)
-      @socket.connect(@endpoint)
+      @socket.connect(opts[:endpoint])
 
       ready
     end
@@ -494,7 +512,7 @@ module Absimth
     end
 
     def ready
-      send(:signal => :ready, :endpoint => @endpoint, :slave_uuid => @uuid)
+      send(:signal => :ready, :endpoint => @comm_endpoint, :slave_uuid => @uuid)
     end
 
     def close
@@ -531,6 +549,9 @@ module Absimth
     def initialize(ctx, opts={})
       @socket = ctx.socket(XS::SUB)
       @socket.setsockopt(XS::LINGER, 0)
+      @comm_endpoint = opts[:comm_endpoint]
+      @lock = Rubinius::Channel.new
+      @lock << nil
     end # class CommEar
 
     def recv_str socket
@@ -545,26 +566,42 @@ module Absimth
     end
  
     def recv
+      @lock.receive
       # Truncate the initial to_uuid
       to_uuid = recv_str(@socket)
       if to_uuid.nil?
         return nil
       end
       str = recv_str(@socket)
+      @lock << nil
       puts "OKAY, EVEN GOT A MSG GONNA MARSHAL IT NOW LOL"
       return load_obj(str)
     end
 
-    def peer(endpt)
-      @socket.connect(endpt)
+    def listen(endpt)
+      puts "#{@comm_endpoint}  =? #{endpt}"
+      if @comm_endpoint == endpt
+        puts "FFFFFFUUUUUUU"
+      else
+        @lock.receive
+        ec @socket.connect(endpt)
+        @lock << nil
+        puts "NO WAY, I AM LISTENING TO SOMEBODY"
+      end
     end
 
     def subscribe(str)
-      ec @socket.setsockopt(XS::SUBSCRIBE, str)
+      @lock.receive
+      rc = ec @socket.setsockopt(XS::SUBSCRIBE, str)
+      @lock << nil
+      rc
     end
 
     def close
-      ec @socket.close
+      @lock.receive
+      rc = ec @socket.close
+      @lock << nil
+      rc
     end
 
   end # class CommEar

@@ -26,6 +26,7 @@ class Patron
   ]
 
   def act
+    sleep rand # temporary measure :P
     if self.painting_lust >= 10.0
       # try to get a painting
       if self.location
@@ -101,6 +102,7 @@ class Gallery
   ]
 
   def act
+    sleep rand # temporary measure :P
     if rand(2)
       self.paintings += 1
       print "[#{Actor.current.object_id}:+:#{self.paintings}]"
@@ -167,10 +169,10 @@ if __FILE__ == $0
       "ZMQ-compatible endpoint for slave-master simulation control/coordination",
       :default => "ipc://.ipc/absimth_control"
     opt :comm_endpoint,
-      "ZMQ-compatible endpoint for inter-node agent communication",
+      "ZMQ-compatible endpoint for inter-node agent communication (each slave needs a unique endpoint)",
       :default => "ipc://.ipc/absimth_comms"
     opt :time,
-      "Abort after this many seconds",
+      "Sleep the process for this many seconds",
       :default => 3
   end
 
