@@ -107,19 +107,24 @@ module Absimth
 
         messages = true
         while messages
-          Actor.receive do |f|
-            f.when(Hash) do |msg|
-              if msg[:type] == :interaction
-                self.from = AgentWrapper.new(*msg[:from])
-                self.send(msg[:method], *msg[:args])
+          begin
+            Actor.receive do |f|
+              f.when(Hash) do |msg|
+                if msg[:type] == :interaction
+                  self.from = AgentWrapper.new(*msg[:from])
+                  self.send(msg[:method], *msg[:args])
+                end
+              end
+              f.when(ANY) do |msg|
+                puts "#{self.class}(#{self.object_id}): Don't know how to handle this message: #{msg}"
+              end
+              f.after(0.0) do
+                messages = false
               end
             end
-            f.when(ANY) do |msg|
-              puts "#{self.class}(#{self.object_id}): Don't know how to handle this message: #{msg}"
-            end
-            f.after(0.0) do
-              messages = false
-            end
+          rescue NoMethodError
+            # TODO: Fix this; possible bug with Rubinius' Actor?
+            # We get seemingly random NoMethodErrors w/ indecipherable relation to user code.
           end
         end # done checking messages
 
@@ -253,8 +258,8 @@ module Absimth
   class Simulation
     def initialize(opts={})
       # TODO: Validate options with XS
-      @control_endpoint = opts[:control_endpoint]
-      @comm_endpoint = opts[:comm_endpoint]
+      @control_endpoint = opts.delete(:control_endpoint)
+      @comm_endpoint = opts.delete(:comm_endpoint)
     end
 
   end # class Simulation
@@ -267,7 +272,12 @@ module Absimth
       super
     end
 
-    def run(t=0)
+    def params
+     @params
+    end
+
+    def run(t=0, params={})
+      @params = params
       @ctx = XS::Context.create
       @control_faucet = ControlFaucet.new(@ctx, :endpoint => @control_endpoint)
 
@@ -320,7 +330,7 @@ module Absimth
       super
     end
 
-    def run(t=0)
+    def run(t=0, params={})
       @ctx = XS::Context.create
       @control_sink = ControlSink.new(@ctx, :endpoint => @control_endpoint, :comm_endpoint => @comm_endpoint)
       @comm_ear = CommEar.new(@ctx, :comm_endpoint => @comm_endpoint)
@@ -374,7 +384,7 @@ module Absimth
         end
       end
 
-      puts "\nOkay, guess we're done"
+      puts "\nOkay, guess we're done. We ran #{@agent_delegates.size} agents locally."
 
       @agent_delegates.each do |uuid, delegate|
         delegate.kill

@@ -100,6 +100,7 @@ class Gallery
 
   attribute :occupants, :default => proc { Set.new }
   attribute :paintings, :default => 1
+  attribute :painting_production, :default => 1
   attribute :bureau
   attribute :checked_in, :default => false
 
@@ -116,7 +117,7 @@ class Gallery
       self.checked_in = true
     end
     if rand(2)
-      self.paintings += 10
+      self.paintings += self.painting_production
       # print "[#{Actor.current.object_id}:+:#{self.paintings}]"
     end
     sleep rand # temporary measure :P
@@ -183,7 +184,7 @@ class CensusBureau
       avg_ng = actual_ng.to_f / self.known_patrons
       avg_np = actual_np.to_f / self.known_patrons
     end
-    puts "Currently #{actual_ng} of #{desired_ng}. The average patron knows #{avg_ng} of #{self.known_galleries} galleries and has #{avg_np} paintings."
+    puts "Currently #{actual_ng} of #{desired_ng}. Of #{self.known_patrons} patrons, the average one knows #{avg_ng} of #{self.known_galleries} galleries and has #{avg_np} paintings."
     sleep 1
   end
 
@@ -196,7 +197,8 @@ def test_simple_sim(opts={})
       bureau = spawn CensusBureau
       last_gallery = nil
       9.times do
-        this_gallery = spawn Gallery, :bureau => bureau
+        this_gallery = spawn Gallery, :bureau => bureau,
+          :painting_production => params[:painting_production]
         9.times do
           spawn Patron, :known_galleries => Set[this_gallery], :bureau => bureau
           if last_gallery
@@ -212,7 +214,7 @@ def test_simple_sim(opts={})
   else
     sim = Absimth::SimulationSlave.new opts
   end
-  sim.run(t) # TODO: Exit condition lol; probably clock limit on sim
+  sim.run(t, :painting_production => 2) # TODO: Exit condition lol; probably clock limit on sim
 end
 
 if __FILE__ == $0
