@@ -194,9 +194,7 @@ module Absimth
     def send(msg)
       msg[:to_uuid] = @uuid
       comm_horn_actor = Actor[:comm_horn]
-      if comm_horn_actor.nil?
-        raise NoCommActorError
-      else
+      unless comm_horn_actor.nil?
         Actor[:comm_horn] << msg
       end
     end
@@ -322,17 +320,7 @@ module Absimth
       @ctx = XS::Context.create
       @control_sink = ControlSink.new(@ctx, :endpoint => @control_endpoint, :comm_endpoint => @comm_endpoint)
       @comm_ear = CommEar.new(@ctx, :comm_endpoint => @comm_endpoint)
-      @comm_ear_listen_actor = Actor.new do
-        puts "Alright, listening for incoming comms"
-        loop do
-          comm_msg = @comm_ear.recv
-          unless comm_msg.nil?
-            handle_comm_msg comm_msg
-            print " >< "
-          end
-        end
-        puts "Okay, done listening for incoming comms"
-      end
+      @comm_ear_listen_actor = nil
       @comm_ear_control_actor = Actor.new do
         msg = Actor.receive
         case msg[:signal]
@@ -341,6 +329,15 @@ module Absimth
         when :listen
           msg[:endpoints].each do |endpt|
             @comm_ear.listen(endpt)
+          end
+          @comm_ear_listen_actor = Actor.new do
+            puts "Alright, listening for incoming comms"
+            loop do
+              comm_msg = @comm_ear.recv
+              handle_comm_msg comm_msg
+              print " >< "
+            end
+            puts "Okay, done listening for incoming comms"
           end
         when :subscribe
           @comm_ear.subscribe(msg[:uuid])
@@ -403,8 +400,8 @@ module Absimth
     end
 
     def handle_comm_msg(msg)
-      puts "Whoa, got a comms message"
-      @agent_delegates[msg.to_uuid] << msg
+      a = @agent_delegates[msg.to_uuid]
+      a << msg unless a.nil?
     end
 
     def spawn(cls, opts={})
@@ -533,9 +530,8 @@ module Absimth
       unless obj.respond_to? :to_uuid
         raise "Can't send a to_uuid-less object on comms!"
       end
-      ec @socket.send_string(obj.to_uuid, XS::SNDMORE)
       msg = dump_obj obj
-      ec @socket.send_string(msg)
+      ec @socket.send_string(obj.to_uuid + msg)
     end
 
     def close
@@ -550,32 +546,15 @@ module Absimth
       @socket = ctx.socket(XS::SUB)
       @socket.setsockopt(XS::LINGER, 0)
       @comm_endpoint = opts[:comm_endpoint]
-      @lock = Rubinius::Channel.new
-      @lock << nil
+      # Fuck it, subscribe all the things
+      @socket.setsockopt(XS::SUBSCRIBE, '')
     end # class CommEar
 
-    def recv_str socket
-      str = ''
-      rc = socket.recv_string(str, XS::NonBlocking)
-      if rc == -1
-          return nil
-      else
-        ec rc
-      end
-      str
-    end
- 
     def recv
-      @lock.receive
       # Truncate the initial to_uuid
-      to_uuid = recv_str(@socket)
-      if to_uuid.nil?
-        return nil
-      end
       str = recv_str(@socket)
-      @lock << nil
-      puts "OKAY, EVEN GOT A MSG GONNA MARSHAL IT NOW LOL"
-      return load_obj(str)
+      print " :D "
+      return load_obj(str[36..-1])
     end
 
     def listen(endpt)
@@ -583,25 +562,18 @@ module Absimth
       if @comm_endpoint == endpt
         puts "FFFFFFUUUUUUU"
       else
-        @lock.receive
         ec @socket.connect(endpt)
-        @lock << nil
-        puts "NO WAY, I AM LISTENING TO SOMEBODY"
+        puts "NO WAY, I AM LISTENING TO #{endpt}"
       end
     end
 
     def subscribe(str)
-      @lock.receive
       rc = ec @socket.setsockopt(XS::SUBSCRIBE, str)
-      @lock << nil
       rc
     end
 
     def close
-      @lock.receive
-      rc = ec @socket.close
-      @lock << nil
-      rc
+      ec @socket.close
     end
 
   end # class CommEar

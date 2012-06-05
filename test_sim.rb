@@ -35,7 +35,7 @@ class Patron
         g = self.known_galleries.to_a[rand(self.known_galleries.size)]
         self.location = g
         self.location.enter
-        print "{#{Actor.current.object_id}:e}"
+        # print "{#{Actor.current.object_id}:e}"
         self.painting_lust += rand * 5.0
       end
     else
@@ -47,7 +47,7 @@ class Patron
     self.paintings += 1
     self.painting_lust -= 10.0
     # TODO: This should be replaced with census/reporting
-    print "{#{Actor.current.object_id}:!}"
+    # print "{#{Actor.current.object_id}:!}"
     # TODO: Shouldn't be making this check once clocks/rollbacks exist
     if self.location
       self.location.leave
@@ -59,19 +59,19 @@ class Patron
     # TODO: Shouldn't be making this check once clocks/rollbacks exist
     if self.location
       self.location.look_around
-      print "{#{Actor.current.object_id}:?}"
+      # print "{#{Actor.current.object_id}:?}"
     end
   end
 
   def see_occupants(occupants)
     o = occupants.to_a[rand(occupants.size)]
     o.ask_about_galleries
-    print "{#{Actor.current.object_id}:o}"
+    # print "{#{Actor.current.object_id}:o}"
   end
 
   def ask_about_galleries
     unless self.known_galleries.empty?
-      print "{#{Actor.current.object_id}:>}"
+      # print "{#{Actor.current.object_id}:>}"
       g = self.known_galleries.to_a[rand(self.known_galleries.size)]
       from.tell_about_gallery(g)
     end
@@ -105,17 +105,17 @@ class Gallery
     sleep rand # temporary measure :P
     if rand(2)
       self.paintings += 1
-      print "[#{Actor.current.object_id}:+:#{self.paintings}]"
+      # print "[#{Actor.current.object_id}:+:#{self.paintings}]"
     end
   end
 
   def request_painting
     if self.paintings > 0
       self.paintings -= 1
-      print "[#{Actor.current.object_id}:-:#{self.paintings}]"
+      # print "[#{Actor.current.object_id}:-:#{self.paintings}]"
       from.send_painting
     else
-      print "[#{Actor.current.object_id}:_]"
+      # print "[#{Actor.current.object_id}:_]"
       from.tell_no_painting_available
     end
   end
