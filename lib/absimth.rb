@@ -3,6 +3,7 @@ require 'actor'
 require 'rubygems'
 require 'ffi-rxs'
 require 'uuid'
+require 'set'
 
 # I don't really want to do this monkey patching... but I kinda do
 class Hash
@@ -248,10 +249,6 @@ module Absimth
     def run(t=0)
       @ctx = XS::Context.create
       @control_faucet = ControlFaucet.new(@ctx, :endpoint => @control_endpoint)
-      # I really, REALLY shouldn't have to do this here, but somebody has to bind
-      @comms = @ctx.socket(XS::PUB)
-      @comms.setsockopt(XS::LINGER, 0)
-      @comms.bind(@comm_endpoint)
 
       puts "Alright, gonna do some spawning and stuff"
 
@@ -259,12 +256,9 @@ module Absimth
       puts "Alright, we are done setting up, let's take a nap"
       sleep t
 
-      while @known_slaves.size > 0 do
-        @known_slaves -= Set[@control_faucet.send(:signal => :done)]
-      end
+      @control_faucet.send_all(@known_slaves, :signal => :done)
 
       @control_faucet.close
-      @comms.close
       @ctx.terminate
 
       puts "Cleaned up fine"
@@ -272,12 +266,21 @@ module Absimth
 
     def spawn(cls, opts={})
       agent_uuid = UUID.generate
-      slave_addr = @control_faucet.send({
+      puts "Gonna spawn agent #{agent_uuid}"
+      rep = @control_faucet.send({
         :signal => :spawn,
         :cls => cls,
         :agent_uuid => agent_uuid,
       }.merge(opts))
-      @known_slaves += Set[slave_addr]
+      puts "Got response #{rep}"
+      s = @known_slaves.size
+      @known_slaves += Set[rep[:slave_uuid]]
+      if @known_slaves.size > s
+        puts "Pushing out a new peer"
+        @control_faucet.send_all(@known_slaves - rep[:slave_uuid],
+                                 :signal => :peer, :endpoint => rep[:endpoint])
+      end
+      puts "Returning agent wrapper"
       return AgentWrapper.new(cls, agent_uuid)
     end
 
@@ -293,55 +296,65 @@ module Absimth
 
     def run(t=0)
       @ctx = XS::Context.create
-      @control_sink = ControlSink.new(@ctx, :endpoint => @control_endpoint)
-      @comm_horn = CommHorn.new(@ctx, :endpoint => @comm_endpoint)
+      control_sink = ControlSink.new(@ctx, :endpoint => @control_endpoint)
+      comm_horn = CommHorn.new(@ctx, :endpoint => @comm_endpoint)
 
-      comm_ear_actor = Actor.new do
-        @comm_ear = CommEar.new(@ctx, :endpoint => @comm_endpoint)
+      @comm_ear_actor = Actor.new do
+        comm_ear = CommEar.new(@ctx, :endpoint => @comm_endpoint)
         puts "Alright, listening for incoming comms"
         loop do
-          comm_msg = @comm_ear.recv
-          handle_comm_msg comm_msg
-          print ">-<"
           Actor.receive do |f|
             f.when(Hash) do |msg|
-              if msg[:signal] == :done
+              case msg[:signal]
+              when :done
                 msg[:from] << {:signal => :ok}
-                @comm_ear.close
+                comm_ear.close
                 break
+              when :peer
+                comm_ear.peer(msg[:endpoint])
+                puts "NO WAY, I PEERED WITH SOMEBODY"
+              when :subscribe
+                comm_ear.subscribe(msg[:uuid])
+                puts "I ACTUALLY SUBSCRIBED TO SOMETHING"
               end
             end
-            f.after(0.0) { nil }
+            f.after(0.0) do
+              comm_msg = comm_ear.recv
+              unless comm_msg.nil?
+                handle_comm_msg comm_msg
+                print " >< "
+              end
+            end
           end
         end
         puts "Okay, done listening for incoming comms"
       end
-      comm_horn_actor = Actor.new do
+      @comm_horn_actor = Actor.new do
         puts "Alright, listening for outgoing comms"
         loop do
           msg = Actor.receive
           if msg.is_a?(Hash) and msg[:signal] == :done
-            @comm_horn.close
+            comm_horn.close
             msg[:from] << {:signal => :ok}
             break
           end
           if msg.respond_to? :to_uuid
-            print "<->"
-            @comm_horn.send(msg)
+            print " <> "
+            comm_horn.send(msg)
           end
         end
         puts "Okay, done listening for outgoing comms"
       end
-      Actor.register(:comm_horn, comm_horn_actor)
+      Actor.register(:comm_horn, @comm_horn_actor)
 
       puts "Alright, listening for control signals"
       loop do
-        control_msg = @control_sink.recv
+        control_msg = control_sink.recv
         if handle_control_msg(control_msg) == :done
-          @control_sink.close
+          control_sink.close
           break
         else
-          @control_sink.ready
+          control_sink.ready
         end
       end
 
@@ -353,9 +366,9 @@ module Absimth
         channel.receive
       end
 
-      comm_horn_actor << {:signal => :done, :from => channel}
+      @comm_horn_actor << {:signal => :done, :from => channel}
       channel.receive
-      comm_ear_actor << {:signal => :done, :from => channel}
+      @comm_ear_actor << {:signal => :done, :from => channel}
       channel.receive
 
       @ctx.terminate
@@ -366,6 +379,8 @@ module Absimth
     def handle_control_msg(msg)
       if msg[:signal] == :spawn
         a = spawn msg.delete(:cls), msg
+      elsif msg[:signal] == :peer
+        @comm_ear_actor << msg
       end
       return msg[:signal]
     end
@@ -376,14 +391,14 @@ module Absimth
     end
 
     def spawn(cls, opts={})
-      unless @comm_horn and @comm_ear
+      unless @comm_horn_actor and @comm_ear_actor
         raise "SimulationSlave#spawn called without connected comm pipes!"
       end
       # TODO: Should do the spawning wherever is most appropriate
       # For simplicity, we'll initially just rely on push/pull sockets
       aw = LocalAgentDelegate.new(cls, opts)
       @agent_delegates[aw.uuid] = aw
-      @comm_ear.subscribe(aw.uuid)
+      @comm_ear_actor << {:signal => :subscribe, :uuid => aw.uuid}
       return aw
     end
 
@@ -391,9 +406,9 @@ module Absimth
 
   class Pipe
 
-    def recv_str socket
+    def recv_str socket, opts={}
       str = ''
-      ec socket.recv_string(str)
+      ec socket.recv_string str
       str
     end
 
@@ -429,15 +444,23 @@ module Absimth
     def send(obj)
       str = dump_obj obj
 
-      slave_addr = recv_str @socket
+      slave_uuid = recv_str @socket
       empty = recv_str @socket
-      slave_msg = recv_str @socket
-      raise "Malformed message from slave" unless load_obj(slave_msg)[:signal] == :ready
+      slave_str = recv_str @socket
+      slave_msg = load_obj(slave_str)
+      raise "Malformed message from slave" unless slave_msg[:slave_uuid] == slave_uuid
 
-      ec @socket.send_string(slave_addr, XS::SNDMORE)
+      ec @socket.send_string(slave_uuid, XS::SNDMORE)
       ec @socket.send_string('', XS::SNDMORE)
       ec @socket.send_string(str)
-      return slave_addr
+      return slave_msg
+    end
+
+    def send_all(uuids, obj)
+      while uuids.size > 0 do
+        rep = send(obj)
+        uuids -= Set[rep[:slave_uuid]]
+      end
     end
 
     def close
@@ -450,12 +473,14 @@ module Absimth
 
     def initialize(ctx, opts={})
       raise "Need options for pipe" unless !opts.empty?
+      @endpoint = opts[:endpoint]
+      @uuid = UUID.generate
       @socket = ctx.socket(XS::REQ)
       @socket.setsockopt(XS::LINGER, 0)
-      @socket.setsockopt(XS::IDENTITY, UUID.generate)
-      @socket.connect(opts[:endpoint])
+      @socket.setsockopt(XS::IDENTITY, @uuid)
+      @socket.connect(@endpoint)
 
-      send(:signal => :ready)
+      ready
     end
 
     def send obj
@@ -469,7 +494,7 @@ module Absimth
     end
 
     def ready
-      send(:signal => :ready)
+      send(:signal => :ready, :endpoint => @endpoint, :slave_uuid => @uuid)
     end
 
     def close
@@ -483,7 +508,7 @@ module Absimth
     def initialize(ctx, opts={})
       @socket = ctx.socket(XS::PUB)
       @socket.setsockopt(XS::LINGER, 0)
-      @socket.connect(opts[:endpoint])
+      @socket.bind(opts[:endpoint])
    end
 
     def send(obj)
@@ -506,17 +531,32 @@ module Absimth
     def initialize(ctx, opts={})
       @socket = ctx.socket(XS::SUB)
       @socket.setsockopt(XS::LINGER, 0)
-      @socket.connect(opts[:endpoint])
     end # class CommEar
 
+    def recv_str socket
+      str = ''
+      rc = socket.recv_string(str, XS::NonBlocking)
+      if rc == -1
+          return nil
+      else
+        ec rc
+      end
+      str
+    end
+ 
     def recv
       # Truncate the initial to_uuid
-      puts "YERP DERP GONNA TRY TO RECV"
       to_uuid = recv_str(@socket)
-      puts "WHOOOAAA, got a UUID"
+      if to_uuid.nil?
+        return nil
+      end
       str = recv_str(@socket)
       puts "OKAY, EVEN GOT A MSG GONNA MARSHAL IT NOW LOL"
       return load_obj(str)
+    end
+
+    def peer(endpt)
+      @socket.connect(endpt)
     end
 
     def subscribe(str)
