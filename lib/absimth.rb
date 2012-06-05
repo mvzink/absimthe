@@ -547,6 +547,7 @@ module Absimth
       @socket.setsockopt(XS::LINGER, 0)
       @comm_endpoint = opts[:comm_endpoint]
       # Fuck it, subscribe all the things
+      # TODO: Fix the actual subscribe filters
       @socket.setsockopt(XS::SUBSCRIBE, '')
     end # class CommEar
 
