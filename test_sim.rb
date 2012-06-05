@@ -185,7 +185,7 @@ class CensusBureau
       avg_np = actual_np.to_f / self.known_patrons
     end
     puts "#{@timestamp}: Currently #{actual_ng} of #{desired_ng}. Of #{self.known_patrons} patrons, the average one knows #{avg_ng} of #{self.known_galleries} galleries and has #{avg_np} paintings."
-    sleep 1
+    sleep 0.2
   end
 
 end
@@ -196,10 +196,10 @@ def test_simple_sim(opts={})
     sim = Absimth::SimulationMaster.new opts do
       bureau = spawn CensusBureau
       last_gallery = nil
-      9.times do
+      11.times do
         this_gallery = spawn Gallery, :bureau => bureau,
           :painting_production => params[:painting_production]
-        9.times do
+        11.times do
           spawn Patron, :known_galleries => Set[this_gallery], :bureau => bureau
           if last_gallery
             spawn Patron, :known_galleries => Set[last_gallery, this_gallery], :bureau => bureau
@@ -207,14 +207,14 @@ def test_simple_sim(opts={})
         end
         last_gallery = this_gallery
       end
-      9.times do
+      11.times do
         spawn Patron, :known_galleries => Set[last_gallery], :bureau => bureau
       end
     end
   else
     sim = Absimth::SimulationSlave.new opts
   end
-  sim.run(t, :painting_production => 4) # TODO: Exit condition lol; probably clock limit on sim
+  sim.run(t, :painting_production => 2) # TODO: Exit condition lol; probably clock limit on sim
 end
 
 if __FILE__ == $0
