@@ -1,10 +1,10 @@
-# Absimth: A Distributed Agent-based Modeling Framework for Ruby
+# Absimthe: A Distributed Agent-based Modeling Framework for Ruby
 
 *Current status: prototype*
 
 Distributed, parallel computations are hard. Global state, virtual time, and numerous other considerations have made distributed computing a tough realm to break into for those wishing to do agent-based modeling.
 
-Aiming to make this easier, Absimth will allow simple, descriptive declarations of agents with plenty of flexibility for how agents interact.
+Aiming to make this easier, Absimthe will allow simple, descriptive declarations of agents with plenty of flexibility for how agents interact.
 
 ## Current features
 
@@ -28,7 +28,7 @@ Aside from bugfixes and performance improvements (of which there are many to be 
 
 ## Usage
 
-**N.B.: Absimth requires [Rubinius](http://rubini.us/)** and always will. I only test on `rbx-2.0.0-dev`. Rubinius's built in Channels, stdlib Actors, and actually good threads are crucial to Absimth.
+**N.B.: Absimthe requires [Rubinius](http://rubini.us/)** and always will. I only test on `rbx-2.0.0-dev`. Rubinius's built in Channels, stdlib Actors, and actually good threads are crucial to Absimthe.
 
 Running a sim should be as easy as:
 

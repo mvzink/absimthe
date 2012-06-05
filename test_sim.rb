@@ -2,7 +2,7 @@
 # Design first: the API is the UI is the spec.
 # Start at the top: ignore the details until they are necessary.
 
-require './lib/absimth'
+require './lib/absimthe'
 
 require 'set'
 
@@ -11,7 +11,7 @@ def assert(msg=nil)
 end
 
 class Patron
-  extend Absimth::Agent
+  extend Absimthe::Agent
   attribute :paintings, :default => 0
   attribute :painting_lust, :default => 0.0
   attribute :location
@@ -96,7 +96,7 @@ class Patron
 end
 
 class Gallery
-  extend Absimth::Agent
+  extend Absimthe::Agent
 
   attribute :occupants, :default => proc { Set.new }
   attribute :paintings, :default => 1
@@ -149,7 +149,7 @@ class Gallery
 end
 
 class CensusBureau
-  extend Absimth::Agent
+  extend Absimthe::Agent
 
   attribute :patrons, :default => proc { Hash.new }
   attribute :known_patrons, :default => 0
@@ -193,7 +193,7 @@ end
 def test_simple_sim(opts={})
   t = opts.delete(:time)
   if opts.delete(:master)
-    sim = Absimth::SimulationMaster.new opts do
+    sim = Absimthe::SimulationMaster.new opts do
       bureau = spawn CensusBureau
       last_gallery = nil
       11.times do
@@ -212,7 +212,7 @@ def test_simple_sim(opts={})
       end
     end
   else
-    sim = Absimth::SimulationSlave.new opts
+    sim = Absimthe::SimulationSlave.new opts
   end
   sim.run(t, :painting_production => 2) # TODO: Exit condition lol; probably clock limit on sim
 end

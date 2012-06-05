@@ -21,7 +21,7 @@ class Actor
   end
 end
 
-module Absimth
+module Absimthe
 
   ANY = Object.new
   def ANY.===(obj)
@@ -656,5 +656,5 @@ module Absimth
 
   end # class CommEar
 
-end # module Absimth
+end # module Absimthe
 
