@@ -16,6 +16,8 @@ class Patron
   attribute :painting_lust, :default => 0.0
   attribute :location
   attribute :known_galleries, :default => proc { Set.new }
+  attribute :bureau
+  attribute :checked_in, :default => false
 
   interactions [
     :ask_about_galleries,
@@ -26,7 +28,10 @@ class Patron
   ]
 
   def act
-    sleep rand # temporary measure :P
+    unless self.checked_in
+      self.bureau.patron_checkin
+      self.checked_in = true
+    end
     if self.painting_lust >= 10.0
       # try to get a painting
       if self.location
@@ -41,6 +46,8 @@ class Patron
     else
       self.painting_lust += rand * 5.0
     end
+    self.bureau.patron_report(:galleries => self.known_galleries.size, :paintings => self.paintings)
+    sleep rand # temporary measure :P
   end
 
   def send_painting
@@ -79,7 +86,7 @@ class Patron
 
   def tell_about_gallery(g)
     # TODO: This should be replaced with census/reporting
-    print "{#{Actor.current.object_id}:+}" unless self.known_galleries.include?(g)
+    # print "{#{Actor.current.object_id}:+}" unless self.known_galleries.include?(g)
     self.known_galleries += Set[g]
     # TODO: Shouldn't be making this check once clocks/rollbacks exist
     self.location.leave if self.location
@@ -93,6 +100,8 @@ class Gallery
 
   attribute :occupants, :default => proc { Set.new }
   attribute :paintings, :default => 1
+  attribute :bureau
+  attribute :checked_in, :default => false
 
   interactions [
     :request_painting,
@@ -102,11 +111,15 @@ class Gallery
   ]
 
   def act
-    sleep rand # temporary measure :P
+    unless self.checked_in
+      self.bureau.gallery_checkin
+      self.checked_in = true
+    end
     if rand(2)
-      self.paintings += 1
+      self.paintings += 10
       # print "[#{Actor.current.object_id}:+:#{self.paintings}]"
     end
+    sleep rand # temporary measure :P
   end
 
   def request_painting
@@ -134,23 +147,66 @@ class Gallery
 
 end
 
+class CensusBureau
+  extend Absimth::Agent
+
+  attribute :patrons, :default => proc { Hash.new }
+  attribute :known_patrons, :default => 0
+  attribute :known_galleries, :default => 0
+
+  interactions [
+    :gallery_checkin,
+    :patron_checkin,
+    :patron_report
+  ]
+
+  def gallery_checkin
+    self.known_galleries += 1
+  end
+
+  def patron_checkin
+    self.known_patrons += 1
+  end
+
+  def patron_report(data)
+    self.patrons[from.uuid] = data
+  end
+
+  def act
+    actual_ng = self.patrons.values.reduce(0) { |m,o| m + o[:galleries] }
+    actual_np = self.patrons.values.reduce(0) { |m,o| m + o[:paintings] }
+    desired_ng = self.known_patrons * self.known_galleries
+    if self.patrons.keys.empty?
+      avg_ng = 0
+      avg_np = 0
+    else
+      avg_ng = actual_ng.to_f / self.known_patrons
+      avg_np = actual_np.to_f / self.known_patrons
+    end
+    puts "Currently #{actual_ng} of #{desired_ng}. The average patron knows #{avg_ng} of #{self.known_galleries} galleries and has #{avg_np} paintings."
+    sleep 1
+  end
+
+end
+
 def test_simple_sim(opts={})
   t = opts.delete(:time)
   if opts.delete(:master)
     sim = Absimth::SimulationMaster.new opts do
+      bureau = spawn CensusBureau
       last_gallery = nil
       9.times do
-        this_gallery = spawn Gallery
+        this_gallery = spawn Gallery, :bureau => bureau
         9.times do
-          spawn Patron, :known_galleries => Set[this_gallery]
+          spawn Patron, :known_galleries => Set[this_gallery], :bureau => bureau
           if last_gallery
-            spawn Patron, :known_galleries => Set[last_gallery, this_gallery]
+            spawn Patron, :known_galleries => Set[last_gallery, this_gallery], :bureau => bureau
           end
         end
         last_gallery = this_gallery
       end
       9.times do
-        spawn Patron, :known_galleries => Set[last_gallery]
+        spawn Patron, :known_galleries => Set[last_gallery], :bureau => bureau
       end
     end
   else

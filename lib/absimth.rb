@@ -213,6 +213,10 @@ module Absimth
       @uuid = uuid
     end
 
+    def uuid
+      @uuid
+    end
+
     def update_delegate
       @delegate = nil
       thr = Thread.list.select { |t| !t[:agent_delegates].nil? }.first
@@ -335,7 +339,6 @@ module Absimth
             loop do
               comm_msg = @comm_ear.recv
               handle_comm_msg comm_msg
-              print " >< "
             end
             puts "Okay, done listening for incoming comms"
           end
@@ -354,7 +357,6 @@ module Absimth
             break
           end
           if msg.respond_to? :to_uuid
-            print " <> "
             @comm_horn.send(msg)
           end
         end
@@ -554,7 +556,6 @@ module Absimth
     def recv
       # Truncate the initial to_uuid
       str = recv_str(@socket)
-      print " :D "
       return load_obj(str[36..-1])
     end
 
