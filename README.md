@@ -1,20 +1,30 @@
 # Absimth: A Distributed Agent-based Modeling Framework for Ruby
 
+*Current status: prototype*
+
 Distributed, parallel computations are hard. Global state, virtual time, and numerous other considerations have made distributed computing a tough realm to break into for those wishing to do agent-based modeling.
 
 Aiming to make this easier, Absimth will allow simple, descriptive declarations of agents with plenty of flexibility for how agents interact.
 
-## Planned features
+## Current features
+
+The crucial architectural features are largely implemented (but with a big "prototype" label)
 
 * **Rollback** of agent state to keep the simulation correct even when some nodes or agents are running slower or faster than others.
-* **Message routing** to use the quickest delivery mechanism, whether another agent is on the same machine or across the globe.
+* **Automatic message routing** to get messages from agent to agent regardless of which node each is located on.
+
+Things which I thought would be features but which can actually be implemented pretty easily as agents:
+
 * **Census/reporting** for flexible data collection throughout a simulation.
 
-## Hopeful future features
+## Planned features
 
-* **Environment**, which is crucial for most useful models, must be implemented as an agent or set of agents, if only the minimal features above are present. This is often not the most efficient.
+Aside from bugfixes and performance improvements (of which there are many to be made), here are some of the major changes currently on the drawing table.
+
 * **Automated agent localization** to move agents most likely to communicate with each other onto the same node.
-* **Easy experiment scheduling** of multiple runs for stochastic models.
+* **Manual agent placement** for fine-grained control over special agents (e.g. reporting/census agents)
+* **Easy experiment scheduling** of multiple runs (e.g. for stochastic models with sensitive initial conditions, or for varying certain parameters) 
+* **Environment**, which is crucial for most useful models, must currently be implemented as an agent or set of agents. This is often not the most efficient, so some level of global or node-local state may be desirable.
 
 ## Usage
 
